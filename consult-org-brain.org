@@ -1,0 +1,230 @@
+* PROJECT consult-org-brain
+:PROPERTIES:
+:CREATED:  [2022-07-05 Tue 13:47]
+:ID:       fcef5e2b-f1ad-490d-a985-2c01cec31b4d
+:END:
+
+Write a ~consult~ source for ~org-brain~ entries with live preview in an =org-brain-visualize= buffer.
+
+https://github.com/jgru/consult-org-roam
+
+** consult--read wrapper
+:PROPERTIES:
+:CREATED:  [2022-12-20 Tue 18:18]
+:ID:       074be994-61a2-4d38-9411-8d66cf0ee203
+:END:
+
+Select entries using =org-brain-completing-read=, acting on =org-brain--all-targets= to create a source for consult:
+#+begin_src elisp :noweb yes :noweb-ref wrapper-function
+(defun consult-org-brain--select-entry (&optional initial-input filter-fn sort-fn require-match prompt)
+  "Wrapper around `consult--read' to select an org-brain entry.
+Offers candidates within `org-brain--all-targets', or from LIST when
+supplied. Can take a PROMPT argument."
+  (let* ((entries (org-brain--all-targets))
+         (prompt (or prompt "Entry: "))
+         (entry
+          (consult--read
+           entries
+           :prompt prompt
+           :initial initial-input
+           :sort sort-fn
+           :require-match require-match
+           :category 'org-brain
+           ;; :state (org-brain-visualize (consult-vertico--candidate) t)
+           ;; :lookup #'consult--lookup-candidate
+           )))
+    (org-brain-get-entry-from-title entry nil)))
+
+#+end_src
+
+** Preview function
+:PROPERTIES:
+:CREATED:  [2022-12-20 Tue 18:19]
+:ID:       7dbef513-3daa-48ad-9888-ae506ea806ec
+:END:
+My attempt at a preview function that uses =org-brain-visualize= to show the currently selected candidate in the completion buffer in a temporary ~*org-brain*~ buffer.
+
+#+begin_src elisp
+(defun consult-org-brain--entry-preview ()
+  "Create preview function for entries."
+  (let ((preview (consult--buffer-preview)))
+    (funcall preview 'preview "*org-brain*") ; preview the *org-brain* buffer
+    ;; (funcall preview 'exit)
+    )) ; exit preview mode
+
+(defun consult-org-brain--entry-preview (cand)
+  "Preview function for org-brain entries."
+    (org-brain-visualize cand t))
+
+#+end_src
+
+#+begin_src elisp :noweb yes :noweb-ref preview-function
+(defun consult-org-brain--entry-preview ()
+  "Create preview function for entries."
+  (let ((open (consult--temporary-files))
+        (preview (consult--buffer-preview)))
+    (lambda (action cand)
+      (when (eq action 'exit)
+        (funcall open))
+      (if cand
+          (funcall preview action
+                   (and cand
+                        (eq action 'preview)
+                        (set-window-start
+                         (selected-window)
+                         (org-brain-get-entry-from-title cand))
+                        (funcall open (org-brain-visualize cand t))))))))
+#+end_src
+
+Entry point to start a consult search:
+#+begin_src elisp :noweb yes :noweb-ref consult
+;;###autoload
+(defun consult-org-brain ()
+  "Find org-brain entry with preview."
+  (interactive "")
+  (org-brain-visualize (consult-org-brain--select-entry)))
+#+end_src
+
+#+begin_src elisp :noweb no
+;;###autoload
+(defun consult-org-brain-file-find ()
+  "Find org-brain entry with preview."
+  (interactive "")
+  (find-file (consult-org-brain--select-file "Entry: ")))
+#+end_src
+
+** File search
+:PROPERTIES:
+:CREATED:  [2022-12-20 Tue 21:10]
+:ID:       cb3c74e0-6b0b-4b2b-8043-f79a7abab831
+:END:
+Search through actual files in =org-brain-files=
+#+begin_src elisp :noweb yes :noweb-ref file-wrapper
+(defun consult-org-brain--ids-to-files (ids)
+  "Take a bunch of IDS of org-brain-entries and convert those into file paths."
+  (mapcar (lambda (id)
+            (org-brain-goto (org-brain-entry-from-id (car id))))
+          ids))
+
+(defun consult-org-brain--select-file (&optional prompt list)
+  "Wrapper around `consult--read' to select an org-brain file.
+Offers candidates withing `org-brain-directory', or from LIST when
+supplied. Can take a PROMPT argument."
+  (let* ((files (if list list
+                  (org-brain-files)))
+         (prompt (if prompt prompt
+                   "Select File: ")))
+    (consult--read
+     files
+     :prompt prompt
+     :sort t
+     :require-match t
+     :state (consult--file-preview))))
+#+end_src
+
+Alternative completing-read function:
+#+begin_src elisp :noweb no
+;; Completing-read interface using consult. Override
+  ;; `org-brain-entry-read' so that each an every completing function
+  ;; resorts to consult
+  (defun consult-org-brain-entry-read (&optional initial-input filter-fn sort-fn
+                                                require-match prompt)
+    "Read and return an `org-brain-entry' with the help of consult.
+INITIAL-INPUT is the initial minibuffer prompt value.
+FILTER-FN is a function to filter out entries: it takes an `org-brain-entry',
+and when nil is returned the entry will be filtered out.
+SORT-FN is a function to sort entries. See `org-brain-entry-read-sort-by-file-mtime'
+for an example sort function.filter-fn sort-fn
+If REQUIRE-MATCH, the minibuffer prompt will require a match.
+PROMPT is a string to show at the beginning of the mini-buffer,
+defaulting to \"Entry: \""
+    (let* ((entries (org-brain-completing-read filter-fn sort-fn)) ;;
+           (prompt (or prompt "Entry: "))
+           ;; Sets state-func only when there are entries to avoid errors
+           ;; with empty brain-dirs
+           (entry
+            (consult--read
+             entries
+             :prompt prompt
+             :initial initial-input
+             :sort sort-fn
+             :require-match require-match
+             :category 'org-brain-entry
+             ;;:history 'org-brain-entry-history
+             :state (consult-org-brain--entry-preview entry)
+             ;; Uses the DEFAULT argument of alist-get to return input in case the input is not found as key.
+             :lookup (lambda (selected candidates input narrow) (alist-get selected candidates input nil #'equal)))))
+      (if (org-brain-entry-at-pt entry) (progn entry)
+        (progn (org-brain-visualize entry)))))
+#+end_src
+
+* Files
+:PROPERTIES:
+:CREATED:  [2022-12-20 Tue 21:05]
+:ID:       4c9f5977-0dc9-447c-9865-6930b62bdd85
+:END:
+** org-brain-consult.el
+:PROPERTIES:
+:CREATED:  [2022-12-20 Tue 21:05]
+:ID:       28364dea-9945-4632-a001-5827be6687af
+:END:
+
+#+begin_src elisp :noweb yes :tangle consult-org-brain.el
+;;; consult-org-brain.el --- Incremental completion for org-brain -*- lexical-binding: t; -*-
+
+<<license>>
+
+;;; Code:
+(require 'org-brain)
+(require 'consult)
+
+(defgroup consult-org-brain nil
+  "Consult interface for org-brain."
+  :group 'org
+  :group 'convenience
+  :prefix "consult-org-brain-")
+
+<<wrapper-function>>
+
+<<file-wrapper>>
+
+<<consult>>
+
+;;; Footer
+
+(provide 'consult-org-brain)
+
+;;; consult-org-brain.el ends here
+#+end_src
+
+#+begin_src elisp :mkdirp yes :noweb yes :noweb-ref license
+;;; Header:
+
+;; Author: Daniel Otto
+;; Version: 0.1
+;; Package-requires: ((emacs "26.3") (org "9.4"))
+
+;; URL: https://github.com/nanjigen/consult-org-brain
+
+;; Copyright (C) 2021-2022 Daniel Otto
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+;;
+;; Incremental search for org-brain
+;;
+#+end_src
+
+#+RESULTS:
